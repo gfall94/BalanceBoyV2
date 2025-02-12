@@ -1,21 +1,29 @@
-import socket
+import asyncio
+import websockets
 import time
 from imu import IMU
 
-UDP_IP = "192.168.1.55"  # IP deines PCs (ändern!)
-UDP_PORT = 5005
+IMU_SENSOR = IMU(debug=False)
+IMU_SENSOR.start()
 
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-imu = IMU(debug=False)
-imu.start()
+async def send_data(websocket, path):
+    """ Sendet IMU-Daten an den Client """
+    try:
+        while True:
+            quat_i, quat_j, quat_k, quat_real = IMU_SENSOR.bno.geomagnetic_quaternion
+            message = f"{quat_i},{quat_j},{quat_k},{quat_real}"
+            await websocket.send(message)
+            await asyncio.sleep(0.05)  # 20 Hz
+    except websockets.exceptions.ConnectionClosed:
+        print("Verbindung geschlossen")
+
+async def main():
+    server = await websockets.serve(send_data, "0.0.0.0", 5005)
+    print("WebSocket-Server läuft auf Port 5005")
+    await server.wait_closed()
 
 try:
-    while True:
-        quat_i, quat_j, quat_k, quat_real = imu.bno.geomagnetic_quaternion
-        message = f"{quat_i},{quat_j},{quat_k},{quat_real}"
-        sock.sendto(message.encode(), (UDP_IP, UDP_PORT))
-        time.sleep(0.05)  # 20 Hz Sendeintervall
+    asyncio.run(main())
 except KeyboardInterrupt:
     print("Beenden...")
-    imu.stop()
-    sock.close()
+    IMU_SENSOR.stop()

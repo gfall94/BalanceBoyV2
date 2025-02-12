@@ -1,20 +1,22 @@
-import socket
+import asyncio
+import websockets
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import numpy as np
+import queue
+import threading
 
-UDP_IP = "0.0.0.0"
-UDP_PORT = 5005
+WS_SERVER = "ws://192.168.1.101:5005"  # Raspberry Pi IP
+BUFFER_SIZE = 200  # Anzahl der Samples
 
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.bind((UDP_IP, UDP_PORT))
-
-BUFFER_SIZE = 200
+# Zeitachse
 time_data = np.linspace(-BUFFER_SIZE, 0, BUFFER_SIZE)
-quat_i_data = np.zeros(BUFFER_SIZE)
+quat_i_data = np.ones(BUFFER_SIZE)
 quat_j_data = np.zeros(BUFFER_SIZE)
 quat_k_data = np.zeros(BUFFER_SIZE)
 quat_real_data = np.zeros(BUFFER_SIZE)
+
+data_queue = queue.Queue()
 
 fig, ax = plt.subplots()
 ax.set_ylim(-10, 10)
@@ -29,12 +31,27 @@ line_k, = ax.plot(time_data, quat_k_data, label="k", color="blue")
 line_r, = ax.plot(time_data, quat_real_data, label="r", color="black")
 ax.legend()
 
+async def receive_data():
+    """ Empfängt Daten über WebSockets """
+    async with websockets.connect(WS_SERVER) as websocket:
+        while True:
+            try:
+                data = await websocket.recv()
+                quat_i, quat_j, quat_k, quat_real = map(float, data.split(","))
+                data_queue.put((quat_i, quat_j, quat_k, quat_real))
+            except Exception as e:
+                print("Fehler beim Empfang:", e)
+                break
+
+# Starte den Empfangs-Thread
+threading.Thread(target=lambda: asyncio.run(receive_data()), daemon=True).start()
 
 def update(frame):
+    """ Holt die neuesten Werte aus der Queue und aktualisiert den Plot """
     global quat_i_data, quat_j_data, quat_k_data, quat_real_data
-    try:
-        data, _ = sock.recvfrom(1024)
-        quat_i, quat_j, quat_k, quat_real = map(float, data.decode().split(","))
+
+    while not data_queue.empty():
+        quat_i, quat_j, quat_k, quat_real = data_queue.get()
 
         quat_i_data = np.roll(quat_i_data, -1)
         quat_i_data[-1] = quat_i
@@ -49,11 +66,8 @@ def update(frame):
         line_j.set_ydata(quat_j_data)
         line_k.set_ydata(quat_k_data)
         line_r.set_ydata(quat_real_data)
-    except Exception as e:
-        print("Fehler:", e)
 
-    return line_i, line_j, line_k
+    return line_i, line_j, line_k, line_r
 
-
-ani = animation.FuncAnimation(fig, update, interval=50, blit=True)
+ani = animation.FuncAnimation(fig, update, interval=50, blit=True, cache_frame_data=False)
 plt.show()

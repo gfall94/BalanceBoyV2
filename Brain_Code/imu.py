@@ -7,6 +7,7 @@ from adafruit_bno08x import (
     BNO_REPORT_GYROSCOPE,
     BNO_REPORT_MAGNETOMETER,
     BNO_REPORT_ROTATION_VECTOR,
+    BNO_REPORT_GEOMAGNETIC_ROTATION_VECTOR,
 )
 from adafruit_bno08x.i2c import BNO08X_I2C
 
@@ -25,6 +26,7 @@ class IMU:
             self.bno.enable_feature(BNO_REPORT_GYROSCOPE)
             self.bno.enable_feature(BNO_REPORT_MAGNETOMETER)
             self.bno.enable_feature(BNO_REPORT_ROTATION_VECTOR)
+            self.bno.enable_feature(BNO_REPORT_GEOMAGNETIC_ROTATION_VECTOR)
             print("IMU erfolgreich initialisiert.")
         except Exception as e:
             print("IMU-Initialisierung Fehler:", e)

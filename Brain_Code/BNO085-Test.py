@@ -10,6 +10,8 @@ from adafruit_bno08x import (
 )
 from adafruit_bno08x.i2c import BNO08X_I2C
 
+dbg = 1
+
 def imu_thread():
     try:
         i2c = busio.I2C(board.SCL, board.SDA, frequency=400000)
@@ -27,9 +29,10 @@ def imu_thread():
         now = time.perf_counter()
         if now - last_time < 1 / 200:
             continue
+        if dbg:
+            print("Frequency: ", (1/(now-last_time)))
         last_time = now
         try:
-            time.sleep(0.5)
             print("Acceleration:")
             # noinspection PyUnboundLocalVariable
             accel_x, accel_y, accel_z = bno.acceleration  # pylint:disable=no-member

@@ -1,73 +1,103 @@
-import asyncio
-import websockets
+import requests
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-import numpy as np
-import queue
-import threading
+import time
+from collections import deque
+from matplotlib.widgets import Button
 
-WS_SERVER = "ws://192.168.1.101:5005"  # Raspberry Pi IP
-BUFFER_SIZE = 200  # Anzahl der Samples
+# Server-URL (hier anpassen)
+URL = "http://192.168.1.101:5000/imu"  # Ersetze dies mit der echten URL
 
-# Zeitachse
-time_data = np.linspace(-BUFFER_SIZE, 0, BUFFER_SIZE)
-quat_i_data = np.ones(BUFFER_SIZE)
-quat_j_data = np.zeros(BUFFER_SIZE)
-quat_k_data = np.zeros(BUFFER_SIZE)
-quat_real_data = np.zeros(BUFFER_SIZE)
+# Zeitfenster für den Plot in Sekunden
+TIME_WINDOW = 60
 
-data_queue = queue.Queue()
+# Datenpuffer
+timestamps = deque(maxlen=1000)
+pitch_values = deque(maxlen=1000)
+roll_values = deque(maxlen=1000)
+yaw_values = deque(maxlen=1000)
+gyro_x_values = deque(maxlen=1000)
+gyro_y_values = deque(maxlen=1000)
+gyro_z_values = deque(maxlen=1000)
 
+# Initialisiere den Plot
 fig, ax = plt.subplots()
-ax.set_ylim(-10, 10)
-ax.set_xlim(-BUFFER_SIZE, 0)
-ax.set_xlabel("Zeit (Samples)")
-ax.set_ylabel("Geomagnetic Quaternion")
-ax.set_title("Live IMU-Daten")
+plt.subplots_adjust(bottom=0.2)
+ax.set_xlabel("Zeit (s)")
+ax.set_ylabel("Winkel (Grad)")
+ax.set_title("IMU-Daten")
+ax.grid(True)
 
-line_i, = ax.plot(time_data, quat_i_data, label="i", color="red")
-line_j, = ax.plot(time_data, quat_j_data, label="j", color="green")
-line_k, = ax.plot(time_data, quat_k_data, label="k", color="blue")
-line_r, = ax.plot(time_data, quat_real_data, label="r", color="black")
+pitch_line, = ax.plot([], [], label="Pitch")
+roll_line, = ax.plot([], [], label="Roll")
+yaw_line, = ax.plot([], [], label="Yaw")
+gyro_x_line, = ax.plot([], [], label="Gyro X")
+gyro_y_line, = ax.plot([], [], label="Gyro Y")
+gyro_z_line, = ax.plot([], [], label="Gyro Z")
 ax.legend()
 
-async def receive_data():
-    """ Empfängt Daten über WebSockets """
-    async with websockets.connect(WS_SERVER) as websocket:
-        while True:
-            try:
-                data = await websocket.recv()
-                quat_i, quat_j, quat_k, quat_real = map(float, data.split(","))
-                data_queue.put((quat_i, quat_j, quat_k, quat_real))
-            except Exception as e:
-                print("Fehler beim Empfang:", e)
-                break
+# Startzeit für relative Zeitachse
+start_time = time.time()
 
-# Starte den Empfangs-Thread
-threading.Thread(target=lambda: asyncio.run(receive_data()), daemon=True).start()
+# Steuerung für Play/Pause
+running = True
 
-def update(frame):
-    """ Holt die neuesten Werte aus der Queue und aktualisiert den Plot """
-    global quat_i_data, quat_j_data, quat_k_data, quat_real_data
 
-    while not data_queue.empty():
-        quat_i, quat_j, quat_k, quat_real = data_queue.get()
+def toggle_animation(event):
+    global running, ani
+    if running:
+        ani.event_source.stop()
+    else:
+        ani.event_source.start()
+    running = not running
 
-        quat_i_data = np.roll(quat_i_data, -1)
-        quat_i_data[-1] = quat_i
-        quat_j_data = np.roll(quat_j_data, -1)
-        quat_j_data[-1] = quat_j
-        quat_k_data = np.roll(quat_k_data, -1)
-        quat_k_data[-1] = quat_k
-        quat_real_data = np.roll(quat_real_data, -1)
-        quat_real_data[-1] = quat_real
 
-        line_i.set_ydata(quat_i_data)
-        line_j.set_ydata(quat_j_data)
-        line_k.set_ydata(quat_k_data)
-        line_r.set_ydata(quat_real_data)
+# Play/Pause-Knopf
+ax_button = plt.axes([0.8, 0.05, 0.1, 0.075])
+button = Button(ax_button, "Play/Pause")
+button.on_clicked(toggle_animation)
 
-    return line_i, line_j, line_k, line_r
 
-ani = animation.FuncAnimation(fig, update, interval=50, blit=True, cache_frame_data=False)
+def fetch_data():
+    """Holt die Daten vom Server."""
+    try:
+        response = requests.get(URL, timeout=1)
+        if response.status_code == 200:
+            data = response.json()
+            current_time = time.time() - start_time
+            timestamps.append(current_time)
+            pitch_values.append(data["pitch"])
+            roll_values.append(data["roll"])
+            yaw_values.append(data["yaw"])
+            gyro_x_values.append(data["gyro_x"])
+            gyro_y_values.append(data["gyro_y"])
+            gyro_z_values.append(data["gyro_z"])
+    except requests.RequestException as e:
+        print("Fehler beim Abrufen der Daten:", e)
+
+
+def update_plot(frame):
+    """Aktualisiert den Plot mit neuen Daten."""
+    if running:
+        fetch_data()
+        if timestamps:
+            min_time = timestamps[-1] - TIME_WINDOW
+            ax.set_xlim(min_time, timestamps[-1])
+
+            # Dynamische Skalierung der Y-Achse
+            all_values = list(pitch_values) + list(roll_values) + list(yaw_values)
+            if all_values:
+                ax.set_ylim(min(all_values) - 5, max(all_values) + 5)
+
+            pitch_line.set_data(timestamps, pitch_values)
+            roll_line.set_data(timestamps, roll_values)
+            yaw_line.set_data(timestamps, yaw_values)
+            gyro_x_line.set_data(timestamps, gyro_x_values)
+            gyro_y_line.set_data(timestamps, gyro_y_values)
+            gyro_z_line.set_data(timestamps, gyro_z_values)
+    return pitch_line, roll_line, yaw_line, gyro_x_line, gyro_y_line, gyro_z_line
+
+
+# Animation starten
+ani = animation.FuncAnimation(fig, update_plot, interval=10)
 plt.show()

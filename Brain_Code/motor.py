@@ -13,7 +13,7 @@ class MOTOR:
         self.pos = 0.0
         self.vel = 0.0
         self.sp = 0.0
-        self.en = False
+        self.en = None
         self.running = False
         self.thread = None
         self.webhook_url_pv = "http://127.0.0.1:5000/motor_"+side+"/pv"
@@ -59,12 +59,12 @@ class MOTOR:
                 data = response.json()
                 if self.en != data["en"]:
                     self.en = data["en"]
-                    en_string=""
                     if not self.en:
                         en_string = "TE0"
                     else:
                         en_string = "TE1"
                     self.mot.write(en_string.encode('utf-8'))
+                    # print(en_string)
 
                 if self.en:
                     self.sp = data["value"]

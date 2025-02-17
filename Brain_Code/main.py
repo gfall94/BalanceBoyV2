@@ -37,6 +37,10 @@ data_json = {
     },
     "imu": {
         "pv": None
+    },
+    "lqr": {
+        "sp": None,
+        "config": None,
     }
 }
 
@@ -77,6 +81,14 @@ def motor_right_pv():
 @app.route('/motor_right/sp', methods=['GET', 'POST'])
 def motor_right_sp():
     return data_handler("motor_right","sp")
+
+@app.route('/lqr/sp', methods=['GET', 'POST'])
+def lqr_sp():
+    return data_handler("lqr","sp")
+
+@app.route('/lqr/config', methods=['GET', 'POST'])
+def lqr_sp():
+    return data_handler("lqr","config")
 
 
 if __name__ == '__main__':

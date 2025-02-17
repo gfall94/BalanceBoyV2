@@ -6,7 +6,7 @@ from collections import deque
 from matplotlib.widgets import Button
 
 # Server-URL (hier anpassen)
-URL = "http://192.168.1.101:5000/imu"  # Ersetze dies mit der echten URL
+URL = "http://192.168.1.101:5000/imu/pv"  # Ersetze dies mit der echten URL
 
 # Zeitfenster für den Plot in Sekunden
 TIME_WINDOW = 60

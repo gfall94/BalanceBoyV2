@@ -29,12 +29,12 @@ def quaternion_to_euler(i, j, k, r):
 
 
 class IMU:
-    def __init__(self, debug=False, freq=200):
+    def __init__(self, debug=False, freq=50):
         self.debug = debug
         self.freq = freq
         self.running = False
         self.thread = None
-        self.webhook_url = "http://127.0.0.1:5000/imu"
+        self.webhook_url = "http://127.0.0.1:5000/imu/pv"
 
         try:
             self.i2c = busio.I2C(board.SCL, board.SDA, frequency=400000)
@@ -71,7 +71,8 @@ class IMU:
                     'gyro_x': gyro_x,
                     'gyro_y': gyro_y,
                     'gyro_z': gyro_z,
-                    'time': now
+                    'time': now,
+                    'frequency': frequency
                 }
 
                 r = requests.post(self.webhook_url, data=json.dumps(data), headers={'Content-Type': 'application/json'})

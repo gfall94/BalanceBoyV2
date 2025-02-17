@@ -1,35 +1,83 @@
 import time
+
+from click import pause
+
 from imu import IMU
+from motor import MOTOR
 from flask import Flask, request, jsonify
 import json
+import logging
 
-IMU_SENSOR = IMU(debug=False, freq=50)
-IMU_SENSOR.start()
+IMU_TASK = IMU(debug=False, freq=50)
+IMU_TASK.start()
+
+MOTOR_LEFT_TASK = MOTOR(debug=False, freq=50, side="left", port="/dev/ttyACM0")
+MOTOR_LEFT_TASK.start()
+# MOTOR_RIGHT_TASK = MOTOR(debug=False, freq=50, side="right")
+# MOTOR_RIGHT_TASK.start()
 
 app = Flask(__name__)
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
 
-imu_json = {}
+data_json = {
+    "motor_left": {
+        "pv": None,
+        "sp": {
+            "value": 0.0,
+            "en": False
+        }
+    },
+    "motor_right": {
+        "pv": None,
+        "sp": {
+            "value": 0.0,
+            "en": False
+        }
+    },
+    "imu": {
+        "pv": None
+    }
+}
 
-@app.route('/imu', methods=['GET', 'POST'])
-def imu():
-    global imu_json
+def data_handler(name,valuename):
+    """Generiert eine Flask-Route."""
+    global data_json
     if request.method == 'POST':
-        # Daten aus der POST-Anfrage extrahieren
         data = request.get_json()
         if data:
-            # Speichern der Daten in der globalen Variable
-            imu_json = data
-            return jsonify({"message": "Daten erfolgreich gespeichert"}), 201
+            data_json[name][valuename] = data
+            #print(json.dumps(data_json, indent=4))
+            return jsonify({"message": f"Daten für {name}/{valuename} erfolgreich gespeichert"}), 201
         else:
             return jsonify({"error": "Keine gültigen JSON-Daten erhalten"}), 400
     elif request.method == 'GET':
-        # Rückgabe der gespeicherten Daten
-        data = imu_json
+        data = data_json[name][valuename]
         if data:
-            return imu_json, 200
+            return jsonify(data), 200
         else:
-            return jsonify({"message": "Keine Daten vorhanden"}), 404
+            return jsonify({"message": f"Keine Daten für {name}/{valuename} vorhanden"}), 404
+
+@app.route('/imu/pv', methods=['GET', 'POST'])
+def imu():
+    return data_handler("imu","pv")
+
+@app.route('/motor_left/pv', methods=['GET', 'POST'])
+def motor_left_pv():
+    return data_handler("motor_left","pv")
+
+@app.route('/motor_left/sp', methods=['GET', 'POST'])
+def motor_left_sp():
+    return data_handler("motor_left","sp")
+
+@app.route('/motor_right/pv', methods=['GET', 'POST'])
+def motor_right_pv():
+    return data_handler("motor_right","pv")
+
+@app.route('/motor_right/sp', methods=['GET', 'POST'])
+def motor_right_sp():
+    return data_handler("motor_right","sp")
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=5000, debug=False)

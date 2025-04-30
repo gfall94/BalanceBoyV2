@@ -1,3 +1,4 @@
+import logging
 import time
 import board
 import threading
@@ -16,84 +17,97 @@ import json
 from scipy.spatial.transform import Rotation as R
 import math
 
-def quaternion_to_euler(i, j, k, r):
-    """
-    Convert a quaternion into euler angles [roll, pitch, yaw]
-    - roll is rotation around x in radians (CCW)
-    - pitch is rotation around y in radians (CCW)
-    - yaw is rotation around z in radians (CCW)
-    """
-    quat = np.array([r, i, j, k])  # scipy erwartet die Reihenfolge [w, x, y, z]
-    euler = R.from_quat(quat, scalar_first=True).as_euler('xyz', degrees=False)  # Konvertierung nach Roll, Pitch, Yaw
-    return euler[0], euler[1], euler[2]
-
-
 class IMU:
-    def __init__(self, debug=False, freq=50):
-        self.debug = debug
+    def __init__(self, name = "IMU", logging_level = logging.INFO, freq=50):
         self.freq = freq
         self.running = False
         self.thread = None
-        self.webhook_url = "http://127.0.0.1:5000/imu/pv"
+        self.frequency = 0.0
+        self.now = 0.0
+        self.roll = 0.0
+        self.pitch = 0.0
+        self.yaw = 0.0
+        self.gyro_x = 0.0
+        self.gyro_y = 0.0
+        self.gyro_z = 0.0
+        self.data = {
+            "roll": self.roll,
+            "pitch": self.pitch,
+            "yaw": self.yaw,
+            "gyro_x": self.gyro_x,
+            "gyro_y": self.gyro_y,
+            "gyro_z": self.gyro_z,
+            "time": self.now,
+            "frequency": self.frequency
+        }
+
+        self.logger = logging.getLogger(name)
+        self.logger.setLevel(logging_level)
 
         try:
-            self.i2c = busio.I2C(board.SCL, board.SDA, frequency=400000)
+            self.i2c = busio.I2C(board.SCL, board.SDA, frequency=800000)
             self.bno = BNO08X_I2C(self.i2c)
             #self.bno.enable_feature(BNO_REPORT_ACCELEROMETER)
-            self.bno.enable_feature(BNO_REPORT_GYROSCOPE)
+            # self.bno.enable_feature(BNO_REPORT_GYROSCOPE)
             #self.bno.enable_feature(BNO_REPORT_MAGNETOMETER)
             #self.bno.enable_feature(BNO_REPORT_GEOMAGNETIC_ROTATION_VECTOR)
             self.bno.enable_feature(BNO_REPORT_ROTATION_VECTOR)
-            print("IMU erfolgreich initialisiert.")
+            self.logger.info("Erfolgreich initialisiert.")
         except Exception as e:
-            print("IMU-Initialisierung Fehler:", e)
+            self.logger.critical(str(e))
             self.bno = None
+
+    def quaternion_to_euler(self, i, j, k, r):
+        """
+        Convert a quaternion into euler angles [roll, pitch, yaw]
+        - roll is rotation around x in radians (CCW)
+        - pitch is rotation around y in radians (CCW)
+        - yaw is rotation around z in radians (CCW)
+        """
+        quat = np.array([r, i, j, k])  # scipy erwartet die Reihenfolge [w, x, y, z]
+        euler = R.from_quat(quat, scalar_first=True).as_euler("xyz", degrees=False)  # Konvertierung nach Roll, Pitch, Yaw
+        return euler[0], euler[1], euler[2]
 
     def _imu_loop(self):
         last_time = 0.0
         while self.running:
-            now = time.perf_counter()
-            if (now - last_time) < (1 / self.freq):
+            self.now = time.perf_counter()
+            if (self.now - last_time) < (1 / self.freq):
                 continue
-            frequency = (1 / (now - last_time))
-            last_time = now
+            self.frequency = (1 / (self.now - last_time))
+            last_time = self.now
 
             try:
-                gyro_x, gyro_y, gyro_z = self.bno.gyro
-                #quat_i, quat_j, quat_k, quat_real = self.bno.geomagnetic_quaternion
-                quat_i, quat_j, quat_k, quat_real = self.bno.quaternion
-                roll, pitch, yaw = quaternion_to_euler(quat_i, quat_j, quat_k, quat_real)
+                # tmp = time.perf_counter()
+                # self.gyro_x, self.gyro_y, self.gyro_z = self.bno.gyro
+                # print(f"\n\nGyro: {time.perf_counter()-tmp}")
 
-                data = {
-                    'roll': roll,
-                    'pitch': pitch,
-                    'yaw': yaw,
-                    'gyro_x': gyro_x,
-                    'gyro_y': gyro_y,
-                    'gyro_z': gyro_z,
-                    'time': now,
-                    'frequency': frequency
+                # quat_i, quat_j, quat_k, quat_real = self.bno.geomagnetic_quaternion
+
+                # tmp = time.perf_counter()
+                quat_i, quat_j, quat_k, quat_real = self.bno.quaternion
+                # print(f"\n\nQuat: {time.perf_counter()-tmp}")
+
+                # tmp = time.perf_counter()
+                pitch, self.roll, self.yaw = self.quaternion_to_euler(quat_i, quat_j, quat_k, quat_real)
+                # print(f"Euler: {time.perf_counter()-tmp}")
+
+                self.pitch = -pitch
+
+                self.data = {
+                    "roll": self.roll,
+                    "pitch": self.pitch,
+                    "yaw": self.yaw,
+                    "gyro_x": self.gyro_x,
+                    "gyro_y": self.gyro_y,
+                    "gyro_z": self.gyro_z,
+                    "time": self.now,
+                    "frequency": self.frequency
                 }
 
-                r = requests.post(self.webhook_url, data=json.dumps(data), headers={'Content-Type': 'application/json'})
-
-                if self.debug:
-                    print("Webhook Response: ", r)
-                    print("Frequency:", frequency)
-                    print("Calibration Status:", self.bno.calibration_status)
-
-                    print("Gyro:")
-                    print(f"X: {gyro_x:.6f}  Y: {gyro_y:.6f} Z: {gyro_z:.6f} rads/s")
-
-                    print("Geomagnetic Quaternion:")
-                    print(f"I: {quat_i:.6f}  J: {quat_j:.6f} K: {quat_k:.6f}  Real: {quat_real:.6f}")
-
-                    print("Euler Angles:")
-                    print(f"Roll: {roll:.6f}  Pitch: {pitch:.6f} Yaw: {yaw:.6f}")
-
-                    print("")
+                self.logger.debug(self.data)
             except Exception as e:
-                print("IMU-Fehler:", e)
+                self.logger.error(str(e))
 
     def start(self):
         """Startet das IMU-Tracking in einem separaten Thread."""
@@ -101,11 +115,15 @@ class IMU:
             self.running = True
             self.thread = threading.Thread(target=self._imu_loop, daemon=True)
             self.thread.start()
-            print("IMU-Thread gestartet.")
+            self.logger.info("Thread gestartet.")
+
 
     def stop(self):
         """Stoppt das IMU-Tracking."""
-        self.running = False
         if self.thread:
             self.thread.join()
-            print("IMU-Thread gestoppt.")
+            self.logger.info("Thread gestoppt.")
+        self.running = False
+
+    def get(self):
+        return self.data

@@ -29,7 +29,7 @@ data = {
         "R": 138.441/1000, # wheel to cog in m
         "g": 9.81, # gravitation im m/s^2
         "m": 885.54481/1000, # mass of robot in kg
-        "J": 0.00545106520548, # Inertia of chassis kg*m^2
+        "J": 25612452.77099/1000000000, # 0.00545106520548, # Inertia of chassis kg*m^2
         "tau_m": 0.3, # time constant of motors
         "K_m": 0.24 # motor Gain
     },
@@ -82,8 +82,8 @@ data = {
     },
     "kalman": {
         "config": {
-            "Q": [1, 1, 1, 1],
-            "R": 1.0
+            "Q": 1.0,
+            "R": [1, 1, 1, 1]
         },
         "out": {
                 "p":0.0,

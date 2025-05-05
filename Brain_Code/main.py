@@ -1,23 +1,19 @@
+import traceback
+import copy
+import json
 import math
 import time
-import threading
 from imu import IMU
 from motor import MOTOR
-from balance_PID import BalancePID
 from LowPass import LowPassFilter
-# from flask import Flask, request, jsonify
-import json
-import copy
-import logging
+from pid import PID
+from lqr import LQR
+from kalman import KalmanObserver
 import zmq
 
-context = zmq.Context()
-socket = context.socket(zmq.REP)
-port = "5556"
-socket.bind("tcp://*:%s" % port)
 
-logging.basicConfig(format='%(name)s - %(levelname)s - %(message)s', level=logging.DEBUG)
-
+# Globals
+freq_sp = 50.0
 data = {
     "main": {
         "upright": False,
@@ -28,11 +24,21 @@ data = {
         "time": 0.0,
         "frequency": 0.0
     },
+    "physics": {
+        "r": 57.75/1000, # wheel radius in m
+        "R": 138.441/1000, # wheel to cog in m
+        "g": 9.81, # gravitation im m/s^2
+        "m": 885.54481/1000, # mass of robot in kg
+        "J": 0.00545106520548, # Inertia of chassis kg*m^2
+        "tau_m": 0.3, # time constant of motors
+        "K_m": 0.24 # motor Gain
+    },
     "motor_left": {
         "sp": 0.0,
         "en": False,
         "position": 0.0,
         "velocity": 0.0,
+        "velocity_LP": 0.0,
         "time": 0.0,
         "frequency": 0.0
     },
@@ -41,6 +47,7 @@ data = {
         "en": False,
         "position": 0.0,
         "velocity": 0.0,
+        "velocity_LP": 0.0,
         "time": 0.0,
         "frequency": 0.0
     },
@@ -50,6 +57,7 @@ data = {
         'pitch_LP': 0.0,
         'yaw': 0.0,
         'gyro_x': 0.0,
+        'gyro_x_LP': 0.0,
         'gyro_y': 0.0,
         'gyro_z': 0.0,
         'time': 0.0,
@@ -64,26 +72,45 @@ data = {
     },
     "lqr": {
         "config": {
-            "Q": [[100, 0, 0, 0],
-                  [0, 5, 0, 0],
-                  [0, 0, 50, 0],
-                  [0, 0, 0, 25]],
-            "R": 1.0,
-            "K": [0.0, 0.0, 0.0, 0.0]
+            "Q": [100, 5, 50, 25],
+            "R": 1.0
         },
         "out": 0.0,
         "en": False,
         "time": 0.0,
         "frequency": 0.0
     },
-    "balance_pid": {
+    "kalman": {
+        "config": {
+            "Q": [1, 1, 1, 1],
+            "R": 1.0
+        },
+        "out": {
+                "p":0.0,
+                "x":0.0,
+                "pv": 0.0,
+                "v": 0.0
+            },
+        "en": False,
+        "time": 0.0,
+        "frequency": 0.0
+    },
+    "pitch_pid": {
             "config": {
-                # "Kp": [80.0, 10.0, 4.0, 2.0],
-                # "Ki": [5.0, 0.0, 0.5, 0.1],
-                # "Kd": [2.0, 0.1, 0.3, 0.2]
-                "Kp": [80.0, 0.0, 0.0, 0.0],
-                "Ki": [5.0, 0.0, 0.0, 0.0],
-                "Kd": [2.0, 0.0, 0.0, 0.0]
+                "Kp": 80.0,
+                "Ki": 5.0,
+                "Kd": 2.0
+            },
+            "out": 0.0,
+            "en": False,
+            "time": 0.0,
+            "frequency": 0.0
+        },
+    "velocity_pid": {
+            "config": {
+                "Kp": 0.01,
+                "Ki": 0.03,
+                "Kd": 0.0
             },
             "out": 0.0,
             "en": False,
@@ -91,145 +118,140 @@ data = {
             "frequency": 0.0
         }
 }
+data_last = data
+# Main
+now = time.perf_counter()
+last_time = now
+dt = 0.0
+frequency = 50.0
+upright_time = 0.0
+# IMU
+imu = IMU()
+# Motor
+motor_left = MOTOR(name = "Motor_Left", port="/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_0668FF485671664867185737-if02", invert=True, min_max=7.5)
+motor_right = MOTOR(name = "Motor_Right", port="/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_066EFF485671664867185641-if02", invert=True, min_max=7.5)
+# Filter
+pitch_LP = LowPassFilter(25.0)
+gyro_x_LP = LowPassFilter(25.0)
+motor_left_vel_LP = LowPassFilter(5.0)
+motor_right_vel_LP = LowPassFilter(5.0)
 
-class MAIN:
-    def __init__(self, name="Main", logging_level=logging.DEBUG, freq=50, data_struct=None, imu=None, motor_left=None, motor_right=None, controller=None):
-        self.freq = freq
-        self.running = False
-        self.thread = None
-        self.frequency = 0.0
-        self.data = data_struct
-        self.data_last = self.data
-        self.imu = imu
-        self.imu_LP = LowPassFilter(cutoff_hz=5.0)
-        self.motor_left = motor_left
-        self.motor_right = motor_right
-        self.controller = controller
-        self.upright_time = 0.0
+kalman = KalmanObserver(config=data["kalman"]["config"], physics=data["physics"], freq=freq_sp)
+# Controller
+pitch_controller = PID(config=data["pitch_pid"]["config"], mini=-100, maxi=100)
+velocity_controller = PID(config=data["velocity_pid"]["config"], mini=-10.0, maxi=10.0)
 
-        self.logger = logging.getLogger(name)
-        self.logger.setLevel(logging_level)
-        logging.getLogger("IMU").setLevel(logging.ERROR)
-        logging.getLogger("Motor_Left").setLevel(logging.ERROR)
-        logging.getLogger("Motor_Right").setLevel(logging.ERROR)
-        logging.getLogger("BalancePID").setLevel(logging.ERROR)
-
-
-    def _main_loop(self):
-        last_time = 0.0
-        while self.running:
-            self.now = time.perf_counter()
-            if (self.now - last_time) < (1 / self.freq):
-                continue
-            self.frequency = (1 / (self.now - last_time))
-            last_time = self.now
-
-            try:
-                # check pitch
-                if (self.data_last["main"]["upright_tol"] > math.degrees(self.data["imu"]["pitch"]) > -self.data_last["main"]["upright_tol"]) and not self.data_last["main"]["upright"]:
-                    self.data["main"]["upright"] = True
-                    self.upright_time = time.perf_counter()
-
-                if self.data_last["main"]["en_tol"] > math.degrees(self.data["imu"]["pitch"]) > -self.data_last["main"]["en_tol"]:
-                    if (self.upright_time + self.data["main"]["activation_delay"]) < time.perf_counter():
-                        self.data["main"]["en"] = True
-                else:
-                    self.data["main"]["upright"] = False
-                    self.upright_time = time.perf_counter()
-                    self.data["main"]["en"] = False
-
-                # enabled?
-                if not self.data["main"]["en"]:
-                    self.data["motor_left"]["en"] = False
-                    self.data["motor_right"]["en"] = False
-                    self.data["balance_pid"]["en"] = False
-                else:
-                    self.data["motor_left"]["en"] = True
-                    self.data["motor_right"]["en"] = True
-                    self.data["balance_pid"]["en"] = True
-
-                # reset
-                # self.logger.error(self.data["main"]["en"] == self.data_last["main"]["en"])
-                if  not (self.data["main"]["en"] == self.data_last["main"]["en"]):
-                    self.motor_left.reset()
-                    self.motor_right.reset()
-                    self.controller.reset()
-
-                # get measurements
-                self.data["imu"] = self.imu.get()
-                self.data["imu"]["pitch_LP"] = self.imu_LP.filter(self.data["imu"]["pitch"])
-                self.data["motor_left"] = self.motor_left.get()
-                self.data["motor_right"] = self.motor_right.get()
-
-                # controller
-                self.controller.set(self.data)
-                self.data["balance_pid"] = self.controller.get()
-
-                # set commands
-                self.data["motor_left"]["sp"] = self.data["balance_pid"]["out"]
-                self.data["motor_right"]["sp"] = self.data["balance_pid"]["out"]
-                self.motor_left.set(self.data["motor_left"])
-                self.motor_right.set(self.data["motor_right"])
-
-                self.data["main"]["frequency"] = self.frequency
-                self.data["main"]["time"] = self.now
-
-                # self.logger.debug(json.dumps(self.data, indent=4))
-                # self.logger.debug(json.dumps(self.data["motor_left"], indent=4))
-                # self.logger.debug("Right: " + json.dumps(self.data["motor_right"], indent=4))
-                # self.logger.debug("IMU: " + json.dumps(self.data["imu"], indent=4))
-                # self.logger.debug("Balance_PID: " + json.dumps(self.data["balance_pid"], indent=4))
-                # self.logger.debug(
-                #     "Pitch: " + str(math.degrees(self.data["imu"]["pitch"]))
-                #     + " PID SP: "+ str(self.data["balance_pid"]["out"])
-                #     + " Mot SP: "+ str(self.data["motor_left"]["sp"])
-                #     )
-
-                self.data_last = copy.deepcopy(self.data)
-
-            except Exception as e:
-                self.logger.critical(str(e))
-
-    def start(self):
-        self.running = True
-        self.thread = threading.Thread(target=self._main_loop, daemon=True)
-        self.thread.start()
-        self.logger.info("Thread gestartet.")
-
-    def stop(self):
-        if self.thread:
-            self.thread.join()
-            self.logger.info("Thread gestoppt.")
-        self.running = False
-
-    def get(self):
-        return self.data
-
-    def set_pid(self,data):
-        self.data["balance_pid"]["config"] = data
+lqr_controller = LQR(config=data["lqr"]["config"], physics=data["physics"], freq=freq_sp)
+# Communication
+context = zmq.Context()
+socket = context.socket(zmq.REP)
+port = "5556"
+socket.bind("tcp://*:%s" % port)
 
 
-imu = IMU(logging_level=logging.ERROR, freq=100)
-imu.start()
+while True:
+    try:
+        now = time.perf_counter()
+        if (now - last_time) > (1 / freq_sp):
+            dt = now - last_time
+            frequency = (1 / dt)
+            last_time = now
+            
+            # Program Control
+            # check pitch
+            if (data_last["main"]["upright_tol"] > math.degrees(data["imu"]["pitch"]) > -
+            data_last["main"]["upright_tol"]) and not data_last["main"]["upright"]:
+                data["main"]["upright"] = True
+                upright_time = time.perf_counter()
 
-motor_left = MOTOR(name = "Motor_Left", logging_level=logging.ERROR, freq=50, port="/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_0668FF485671664867185737-if02", invert=True)
-motor_left.start()
-motor_right = MOTOR(name = "Motor_Right", logging_level=logging.ERROR, freq=50, port="/dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_066EFF485671664867185641-if02", invert=True)
-motor_right.start()
+            if data_last["main"]["en_tol"] > math.degrees(data["imu"]["pitch"]) > -data_last["main"][
+                "en_tol"]:
+                if (upright_time + data["main"]["activation_delay"]) < time.perf_counter():
+                    data["main"]["en"] = True
+            else:
+                data["main"]["upright"] = False
+                upright_time = time.perf_counter()
+                data["main"]["en"] = False
 
-balancePID = BalancePID(logging_level=logging.ERROR, freq=50, config=data["balance_pid"]["config"])
-balancePID.start()
+            # enabled?
+            if not data["main"]["en"]:
+                data["motor_left"]["en"] = False
+                data["motor_right"]["en"] = False
+                data["pitch_pid"]["en"] = False
+                data["velocity_pid"]["en"] = False
+                data["lqr"]["en"] = False
+            else:
+                data["motor_left"]["en"] = True
+                data["motor_right"]["en"] = True
+                data["pitch_pid"]["en"] = True
+                data["velocity_pid"]["en"] = False
+                data["lqr"]["en"] = True
 
-main_loop = MAIN(logging_level=logging.DEBUG, freq=50, data_struct=data, imu=imu, motor_left=motor_left, motor_right=motor_right, controller=balancePID)
-main_loop.start()
+            # reset
+            if not (data["main"]["en"] == data_last["main"]["en"]):
+                motor_left.reset()
+                motor_right.reset()
+                pitch_controller.reset()
+                velocity_controller.reset()
 
-if __name__ == '__main__':
-    while True:
-        msg = socket.recv_string()
-        if not "blabla" in msg:
-            rcv = json.loads(msg)
-            print(f"got data: {rcv}")
-            main_loop.set_pid(rcv)
+            # Read IMU
+            data["imu"] = imu.loop()
+            # Read Motors
+            data["motor_left"] = motor_left.get()
+            data["motor_right"] = motor_right.get()
 
-        message = json.dumps(data)
-        socket.send_string(message)
+            # Filtering
+            # data["imu"]["gyro_x"] = (data["imu"]["pitch"] - data_last["imu"]["pitch"]) * dt
+            data["imu"]["gyro_x_LP"] = gyro_x_LP.filter(data["imu"]["gyro_x"])
+            data["imu"]["pitch_LP"] = pitch_LP.filter(data["imu"]["pitch"])
+            data["motor_left"]["velocity_LP"] = motor_left_vel_LP.filter(data["motor_left"]["velocity"])
+            data["motor_right"]["velocity_LP"] = motor_right_vel_LP.filter(data["motor_right"]["velocity"])
+
+            data["kalman"] = kalman.loop(u= data["lqr"]["out"],
+                                        y1=data["imu"]["pitch_LP"],
+                                        y2=(data["motor_left"]["position"]+data["motor_right"]["position"])/2,
+                                        y3 = data["imu"]["gyro_x_LP"],
+                                        y4 = (data["motor_left"]["velocity_LP"]+data["motor_right"]["velocity_LP"])/2,
+                                        data=data["kalman"])
+            # Controller
+            # data["velocity_pid"] = velocity_controller.loop(sp=0.0,x=(data["motor_left"]["velocity_LP"]+data["motor_right"]["velocity_LP"])/2,data=data["velocity_pid"])
+            # data["pitch_pid"] = pitch_controller.loop(sp=data["velocity_pid"]["out"],x=data["imu"]["pitch_LP"],data=data["pitch_pid"])
+            data["lqr"] = lqr_controller.loop(sp=data["sp"],
+                                              x1=data["imu"]["pitch_LP"],
+                                              x2=(data["motor_left"]["position"]+data["motor_right"]["position"])/2,
+                                              x3 = data["imu"]["gyro_x_LP"],
+                                              x4 = (data["motor_left"]["velocity_LP"]+data["motor_right"]["velocity_LP"])/2,
+                                              data=data["lqr"])
+
+            # Set Motors
+            data["motor_left"]["sp"] = data["lqr"]["out"]
+            data["motor_right"]["sp"] = data["lqr"]["out"]
+            motor_left.set(data["motor_left"])
+            motor_right.set(data["motor_right"])
+
+            # Misc
+            data["main"]["frequency"] = frequency
+            data["main"]["time"] = now
+            data_last = copy.deepcopy(data)
+
+            # Communication
+            msg = socket.recv_string()
+            if not "blabla" in msg:
+                rcv = json.loads(msg)
+                print(f"got data: {rcv}")
+                data["pitch_pid"]["config"] = rcv["pitch"]
+                data["velocity_pid"]["config"] = rcv["velocity"]
+                data["lqr"]["config"] = rcv["lqr"]
+
+            message = json.dumps(data)
+            socket.send_string(message)
+
+            # Debugging
+            print( f"{frequency:.3f}\t{motor_right.pos:.3f}")
+            # print(json.dumps(data, indent=4))
+            # print(str(controller.integral))
+        else:
+            time.sleep(1/1000)
+    except Exception as e:
+        print(str(e))
+        traceback.format_exc()

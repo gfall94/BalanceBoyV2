@@ -1,23 +1,52 @@
+import traceback
 import logging
 import time
-import threading
+import numpy as np
+import control
 
 class LQR:
-    def __init__(self, name = "LQR", logging_level = logging.INFO, freq=50, config={}):
+    def __init__(self, name = "LQR", logging_level = logging.INFO, freq=50.0, config={}, physics={}, min_max=100.0):
         self.freq = freq
-        self.running = False
-        self.thread = None
         self.frequency = 0.0
         self.now = 0.0
+        self.last_time = 0.0
+        self.dt = 0.0
         self.en = False
         self.config = config
-        self.sp = {
-            "p":0.0,
-            "x":0.0,
-            "pv": 0.0,
-            "v": 0.0,
-            "yaw": 0.0
-            }
+        self.physics = physics
+
+        self.Q = np.diag(self.config["Q"])
+        self.R_c = np.array([[self.config["R"]]])
+
+        self.r = self.physics["r"]
+        self.R = self.physics["R"]
+        self.g = self.physics["g"]
+        self.m = self.physics["m"]
+        self.J = self.physics["J"]
+        self.tau_m = self.physics["tau_m"]
+        self.K_m = self.physics["K_m"]
+
+        self.A = np.array([[0, 0, 1, 0],
+                      [0, 0, 0, 1],
+                      [(self.m * self.g * self.R) / self.J, 0, 0, (self.m * self.r * self.R) / (self.tau_m * self.J)],
+                      [0, 0, 0, -1 / self.tau_m]])
+
+        self.B = np.array([[0],
+                      [0],
+                      [(-self.K_m * self.m * self.r * self.R) / (self.tau_m * self.J)],
+                      [self.K_m / self.tau_m]])
+
+        self.C = np.array([[1, 1, 1, 1]])
+        self.D = np.array([[0]])
+
+        self.Gains = None
+
+        self.min = -min_max
+        self.max = min_max
+
+        self.x = np.array([0.0, 0.0, 0.0, 0.0])
+        self.sp = np.array([0.0, 0.0, 0.0, 0.0])
+
         self.out = 0.0
         self.data = {
             "config": self.config,
@@ -31,59 +60,78 @@ class LQR:
         self.logger.setLevel(logging_level)
 
         try:
-            # hier gains berechnen
             self.logger.info("Erfolgreich initialisiert.")
         except Exception as e:
             self.logger.critical(str(e))
+            traceback.format_exc()
 
-    def _lqr_loop(self):
-        last_time = 0.0
-        while self.running:
-            self.now = time.perf_counter()
-            if (self.now - last_time) < (1 / self.freq):
-                continue
-            self.frequency = (1 / (self.now - last_time))
-            last_time = self.now
+    def _loop(self):
+        self.now = time.perf_counter()
+        self.dt = self.now - self.last_time
+        self.frequency = (1 / self.dt)
+        self.last_time = self.now
 
-            try:
-                if self.en:
-                    bla=1
-                else:
-                    self.out = 0.0
+        try:
+            if self.en:
 
-                self.data = {
-                    "config": self.config,
-                    "out": self.out,
-                    "en": self.en,
-                    "time": self.now,
-                    "frequency": self.frequency
-                }
-
-                self.logger.debug(self.data)
-            except Exception as e:
-                self.logger.error(str(e))
-
-    def start(self):
-        """Startet das IMU-Tracking in einem separaten Thread."""
-        if not self.running:
-            self.running = True
-            self.thread = threading.Thread(target=self._lqr_loop, daemon=True)
-            self.thread.start()
-            self.logger.info("Thread gestartet.")
+                u = -self.Gains @ (self.x - self.sp)
 
 
-    def stop(self):
-        """Stoppt das IMU-Tracking."""
-        if self.thread:
-            self.thread.join()
-            self.logger.info("Thread gestoppt.")
-        self.running = False
+                self.out = float(max(min(u, self.max), self.min))
+                # self.out = 100.0
+            else:
+                self.out = 0.0
 
-    def get(self):
+            self.data = {
+                "config": self.config,
+                "out": self.out,
+                "en": self.en,
+                "time": self.now,
+                "frequency": self.frequency
+            }
+
+            self.logger.debug(self.data)
+        except Exception as e:
+            self.logger.error(str(e))
+            traceback.format_exc()
+
+    def loop(self, sp, x1, x2, x3, x4, data):
+        self.sp = np.array([sp["p"], sp["x"], sp["pv"], sp["v"]])
+        self.config = data["config"]
+        Q = np.diag(self.config["Q"])
+        R = np.array([[self.config["R"]]])
+        if (not np.array_equal(self.Q, Q)) or (not np.array_equal(self.R_c, R)):
+            self.Q = Q
+            self.R_c = R
+            self.calc_gains()
+
+        self.en = data["en"]
+
+        self.x = np.array([x1, x2, x3, x4])
+
+        self._loop()
+
         return self.data
 
-    def set(self, sp, data):
-        self.sp = sp
-        self.config = data["config"]
-        self.en = data["en"]
+    def calc_gains(self):
+        # 1. create system
+        sys_cont = control.StateSpace(self.A, self.B, self.C, self.D)
+
+        # 2. discretize
+        Ts = 1/self.freq
+        sys_disc = control.c2d(sys_cont, Ts, method='zoh')
+
+        Ad = sys_disc.A
+        Bd = sys_disc.B
+
+        # 3. calc gains
+        self.Gains, S, E = control.dlqr(Ad, Bd, self.Q, self.R_c)
+        print("Diskreter LQR Gain K:", self.Gains)
+    # def reset(self):
+    #     self.integral = 0.0
+    #     self.derivative = 0.0
+    #     self.error = 0.0
+    #     self.prev_error = 0.0
+
+
 

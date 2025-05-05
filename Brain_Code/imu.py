@@ -1,7 +1,6 @@
 import logging
 import time
 import board
-import threading
 import busio
 import numpy as np
 from adafruit_bno08x import (
@@ -12,18 +11,13 @@ from adafruit_bno08x import (
     BNO_REPORT_ROTATION_VECTOR,
     )
 from adafruit_bno08x.i2c import BNO08X_I2C
-import requests
-import json
 from scipy.spatial.transform import Rotation as R
-import math
 
 class IMU:
-    def __init__(self, name = "IMU", logging_level = logging.INFO, freq=50):
-        self.freq = freq
-        self.running = False
-        self.thread = None
+    def __init__(self, name = "IMU", logging_level = logging.INFO):
         self.frequency = 0.0
         self.now = 0.0
+        self.last_time = 0.0
         self.roll = 0.0
         self.pitch = 0.0
         self.yaw = 0.0
@@ -48,7 +42,7 @@ class IMU:
             self.i2c = busio.I2C(board.SCL, board.SDA, frequency=800000)
             self.bno = BNO08X_I2C(self.i2c)
             #self.bno.enable_feature(BNO_REPORT_ACCELEROMETER)
-            # self.bno.enable_feature(BNO_REPORT_GYROSCOPE)
+            self.bno.enable_feature(BNO_REPORT_GYROSCOPE)
             #self.bno.enable_feature(BNO_REPORT_MAGNETOMETER)
             #self.bno.enable_feature(BNO_REPORT_GEOMAGNETIC_ROTATION_VECTOR)
             self.bno.enable_feature(BNO_REPORT_ROTATION_VECTOR)
@@ -68,18 +62,14 @@ class IMU:
         euler = R.from_quat(quat, scalar_first=True).as_euler("xyz", degrees=False)  # Konvertierung nach Roll, Pitch, Yaw
         return euler[0], euler[1], euler[2]
 
-    def _imu_loop(self):
-        last_time = 0.0
-        while self.running:
+    def loop(self):
             self.now = time.perf_counter()
-            if (self.now - last_time) < (1 / self.freq):
-                continue
-            self.frequency = (1 / (self.now - last_time))
-            last_time = self.now
+            self.frequency = (1 / (self.now - self.last_time))
+            self.last_time = self.now
 
             try:
                 # tmp = time.perf_counter()
-                # self.gyro_x, self.gyro_y, self.gyro_z = self.bno.gyro
+                self.gyro_x, self.gyro_y, self.gyro_z = self.bno.gyro
                 # print(f"\n\nGyro: {time.perf_counter()-tmp}")
 
                 # quat_i, quat_j, quat_k, quat_real = self.bno.geomagnetic_quaternion
@@ -92,13 +82,13 @@ class IMU:
                 pitch, self.roll, self.yaw = self.quaternion_to_euler(quat_i, quat_j, quat_k, quat_real)
                 # print(f"Euler: {time.perf_counter()-tmp}")
 
-                self.pitch = -pitch
+                self.pitch = pitch
 
                 self.data = {
                     "roll": self.roll,
-                    "pitch": self.pitch,
+                    "pitch": -self.pitch+0.022725,
                     "yaw": self.yaw,
-                    "gyro_x": self.gyro_x,
+                    "gyro_x": -self.gyro_x,
                     "gyro_y": self.gyro_y,
                     "gyro_z": self.gyro_z,
                     "time": self.now,
@@ -109,21 +99,5 @@ class IMU:
             except Exception as e:
                 self.logger.error(str(e))
 
-    def start(self):
-        """Startet das IMU-Tracking in einem separaten Thread."""
-        if self.bno and not self.running:
-            self.running = True
-            self.thread = threading.Thread(target=self._imu_loop, daemon=True)
-            self.thread.start()
-            self.logger.info("Thread gestartet.")
+            return self.data
 
-
-    def stop(self):
-        """Stoppt das IMU-Tracking."""
-        if self.thread:
-            self.thread.join()
-            self.logger.info("Thread gestoppt.")
-        self.running = False
-
-    def get(self):
-        return self.data

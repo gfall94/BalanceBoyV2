@@ -8,7 +8,8 @@ from motor import MOTOR
 from LowPass import LowPassFilter
 from pid import PID
 from lqr import LQR
-from kalman import KalmanObserver
+from kalman import KalmanFilter
+# from ps4_controller import PS4Controller
 import zmq
 
 
@@ -30,8 +31,8 @@ data = {
         "g": 9.81, # gravitation im m/s^2
         "m": 885.54481/1000, # mass of robot in kg
         "J": 25612452.77099/1000000000, # 0.00545106520548, # Inertia of chassis kg*m^2
-        "tau_m": 0.3, # time constant of motors
-        "K_m": 0.24 # motor Gain
+        "tau_m": (0.103+0.108)/2, # time constant of motors
+        "K_m": (0.231+0.235)/2 # motor Gain
     },
     "motor_left": {
         "sp": 0.0,
@@ -72,7 +73,7 @@ data = {
     },
     "lqr": {
         "config": {
-            "Q": [100, 5, 50, 25],
+            "Q": [100, 15, 50, 25],
             "R": 1.0
         },
         "out": 0.0,
@@ -82,8 +83,8 @@ data = {
     },
     "kalman": {
         "config": {
-            "Q": 1.0,
-            "R": [1, 1, 1, 1]
+            "Q": [50, 50, 25, 25],
+            "R": [0.05, 0.05, 0.5, 0.5]
         },
         "out": {
                 "p":0.0,
@@ -91,7 +92,6 @@ data = {
                 "pv": 0.0,
                 "v": 0.0
             },
-        "en": False,
         "time": 0.0,
         "frequency": 0.0
     },
@@ -116,8 +116,15 @@ data = {
             "en": False,
             "time": 0.0,
             "frequency": 0.0
+        },
+    "ps4": {
+        "p":0.0,
+        "x":0.0,
+        "pv": 0.0,
+        "v": 0.0,
+        "yaw": 0.0
         }
-}
+    }
 data_last = data
 # Main
 now = time.perf_counter()
@@ -136,7 +143,7 @@ gyro_x_LP = LowPassFilter(25.0)
 motor_left_vel_LP = LowPassFilter(5.0)
 motor_right_vel_LP = LowPassFilter(5.0)
 
-kalman = KalmanObserver(config=data["kalman"]["config"], physics=data["physics"], freq=freq_sp)
+kalman = KalmanFilter(config=data["kalman"]["config"], physics=data["physics"], freq=freq_sp)
 # Controller
 pitch_controller = PID(config=data["pitch_pid"]["config"], mini=-100, maxi=100)
 velocity_controller = PID(config=data["velocity_pid"]["config"], mini=-10.0, maxi=10.0)
@@ -147,6 +154,10 @@ context = zmq.Context()
 socket = context.socket(zmq.REP)
 port = "5556"
 socket.bind("tcp://*:%s" % port)
+
+# PS4Controller
+# ps4 = PS4Controller()
+# ps4.start()
 
 
 while True:
@@ -193,12 +204,21 @@ while True:
                 motor_right.reset()
                 pitch_controller.reset()
                 velocity_controller.reset()
+                data["sp"] = {
+                        "p":0.0,
+                        "x":0.0,
+                        "pv": 0.0,
+                        "v": 0.0,
+                        "yaw": 0.0
+                        }
 
             # Read IMU
             data["imu"] = imu.loop()
             # Read Motors
             data["motor_left"] = motor_left.get()
             data["motor_right"] = motor_right.get()
+            # Setpoints
+            # ps4.get()
 
             # Filtering
             # data["imu"]["gyro_x"] = (data["imu"]["pitch"] - data_last["imu"]["pitch"]) * dt
@@ -207,23 +227,26 @@ while True:
             data["motor_left"]["velocity_LP"] = motor_left_vel_LP.filter(data["motor_left"]["velocity"])
             data["motor_right"]["velocity_LP"] = motor_right_vel_LP.filter(data["motor_right"]["velocity"])
 
-            data["kalman"] = kalman.loop(u= data["lqr"]["out"],
-                                        y1=data["imu"]["pitch_LP"],
-                                        y2=(data["motor_left"]["position"]+data["motor_right"]["position"])/2,
-                                        y3 = data["imu"]["gyro_x_LP"],
-                                        y4 = (data["motor_left"]["velocity_LP"]+data["motor_right"]["velocity_LP"])/2,
-                                        data=data["kalman"])
+            data["kalman"] = kalman.loop(u = data["lqr"]["out"],
+                                        x1 = data["imu"]["pitch_LP"],
+                                        x2 = (data["motor_left"]["position"]+data["motor_right"]["position"])/2,
+                                        x3 = data["imu"]["gyro_x_LP"],
+                                        x4 = (data["motor_left"]["velocity_LP"]+data["motor_right"]["velocity_LP"])/2,
+                                        data = data["kalman"])
+
             # Controller
             # data["velocity_pid"] = velocity_controller.loop(sp=0.0,x=(data["motor_left"]["velocity_LP"]+data["motor_right"]["velocity_LP"])/2,data=data["velocity_pid"])
             # data["pitch_pid"] = pitch_controller.loop(sp=data["velocity_pid"]["out"],x=data["imu"]["pitch_LP"],data=data["pitch_pid"])
-            data["lqr"] = lqr_controller.loop(sp=data["sp"],
-                                              x1=data["imu"]["pitch_LP"],
-                                              x2=(data["motor_left"]["position"]+data["motor_right"]["position"])/2,
-                                              x3 = data["imu"]["gyro_x_LP"],
-                                              x4 = (data["motor_left"]["velocity_LP"]+data["motor_right"]["velocity_LP"])/2,
+            data["lqr"] = lqr_controller.loop(sp = data["sp"],
+                                              x1 = data["kalman"]["out"]["p"],
+                                              x2 = data["kalman"]["out"]["x"],
+                                              x3 = data["kalman"]["out"]["pv"],
+                                              x4 = data["kalman"]["out"]["v"],
                                               data=data["lqr"])
 
             # Set Motors
+            data["motor_left"]["sp"] = data["lqr"]["out"]
+            data["motor_right"]["sp"] = data["lqr"]["out"]
             data["motor_left"]["sp"] = data["lqr"]["out"]
             data["motor_right"]["sp"] = data["lqr"]["out"]
             motor_left.set(data["motor_left"])
@@ -235,19 +258,27 @@ while True:
             data_last = copy.deepcopy(data)
 
             # Communication
-            msg = socket.recv_string()
-            if not "blabla" in msg:
-                rcv = json.loads(msg)
-                print(f"got data: {rcv}")
-                data["pitch_pid"]["config"] = rcv["pitch"]
-                data["velocity_pid"]["config"] = rcv["velocity"]
-                data["lqr"]["config"] = rcv["lqr"]
-
-            message = json.dumps(data)
-            socket.send_string(message)
+            # msg = socket.recv_string()
+            # if not "blabla" in msg:
+            #     if "lqr" in msg:
+            #         rcv = json.loads(msg)
+            #         print(f"got data: {rcv}")
+            #         data["pitch_pid"]["config"] = rcv["pitch"]
+            #         data["velocity_pid"]["config"] = rcv["velocity"]
+            #         data["lqr"]["config"] = rcv["lqr"]
+            #         lqr_controller.calc_gains(data["lqr"]["config"])
+            #         data["kalman"]["config"] = rcv["kalman"]
+            #         kalman.calc_gains(data["kalman"]["config"])
+            #     if "sp" in msg:
+            #         rcv = json.loads(msg)
+            #         print(f"got data: {rcv}")
+            #         data["sp"] = rcv["sp"]
+            #
+            # message = json.dumps(data)
+            # socket.send_string(message)
 
             # Debugging
-            print( f"{frequency:.3f}\t{motor_right.pos:.3f}")
+            print( f"{frequency:.3f}")
             # print(json.dumps(data, indent=4))
             # print(str(controller.integral))
         else:

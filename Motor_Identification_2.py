@@ -9,6 +9,7 @@ df = pd.read_csv("motor_measurement.csv")
 
 # Extrahiere die Spalten
 t = df["time"].values
+t = t-min(t)
 u = df["u"].values  # Eingang
 y = df["y1"].values  # Ausgang
 

@@ -27,14 +27,14 @@ class LQR:
         self.K_m = self.physics["K_m"]
 
         self.A = np.array([[0, 0, 1, 0],
-                      [0, 0, 0, 1],
-                      [(self.m * self.g * self.R) / self.J, 0, 0, (self.m * self.r * self.R) / (self.tau_m * self.J)],
-                      [0, 0, 0, -1 / self.tau_m]])
+                            [0, 0, 0, 1],
+                            [(self.m * self.g * self.R) / self.J, 0, 0, (self.m * self.r * self.R) / (self.tau_m * self.J)],
+                            [0, 0, 0, -1 / self.tau_m]])
 
         self.B = np.array([[0],
-                      [0],
-                      [(-self.K_m * self.m * self.r * self.R) / (self.tau_m * self.J)],
-                      [self.K_m / self.tau_m]])
+                            [0],
+                            [(-self.K_m * self.m * self.r * self.R) / (self.tau_m * self.J)],
+                            [self.K_m / self.tau_m]])
 
         self.C = np.array([[1, 1, 1, 1]])
         self.D = np.array([[0]])
@@ -60,6 +60,7 @@ class LQR:
         self.logger.setLevel(logging_level)
 
         try:
+            self.calc_gains(self.config)
             self.logger.info("Erfolgreich initialisiert.")
         except Exception as e:
             self.logger.critical(str(e))
@@ -75,8 +76,6 @@ class LQR:
             if self.en:
 
                 u = -self.Gains @ (self.x - self.sp)
-
-
                 self.out = float(max(min(u, self.max), self.min))
                 # self.out = 100.0
             else:
@@ -97,13 +96,7 @@ class LQR:
 
     def loop(self, sp, x1, x2, x3, x4, data):
         self.sp = np.array([sp["p"], sp["x"], sp["pv"], sp["v"]])
-        self.config = data["config"]
-        Q = np.diag(self.config["Q"])
-        R = np.array([[self.config["R"]]])
-        if (not np.array_equal(self.Q, Q)) or (not np.array_equal(self.R_c, R)):
-            self.Q = Q
-            self.R_c = R
-            self.calc_gains()
+        # self.sp = np.array([0,0,0,0])
 
         self.en = data["en"]
 
@@ -113,7 +106,13 @@ class LQR:
 
         return self.data
 
-    def calc_gains(self):
+    def calc_gains(self, config):
+        self.config = config
+        Q = np.diag(self.config["Q"])
+        R_c = np.array([[self.config["R"]]])
+        self.Q = Q
+        self.R_c = R_c
+
         # 1. create system
         sys_cont = control.StateSpace(self.A, self.B, self.C, self.D)
 

@@ -1,64 +1,62 @@
+import traceback
+import logging
+import time
 import numpy as np
 import control
-import logging
-import traceback
 
-class KalmanObserver:
-    def __init__(self, name = "Kalman", logging_level = logging.INFO, freq=50.0, config={}, physics={}):
+class KalmanFilter:
+    def __init__(self, name="KalmanFilter", logging_level=logging.INFO, freq=50.0, config={}, physics={}):
         self.freq = freq
         self.frequency = 0.0
         self.now = 0.0
         self.last_time = 0.0
         self.dt = 0.0
-        self.en = False
         self.config = config
         self.physics = physics
 
+        # 🟢 Empfohlene Startwerte für Balancer-Roboter
+        # self.Q = np.diag(self.config["Q"])  # Prozessrauschen (Modell)
+        # self.R = np.diag(self.config["R"])  # Messrauschen (Sensoren)
+        self.Q = np.diag([50, 50, 25, 25])  # Prozessrauschen
+        self.R = np.diag([0.05, 0.05, 0.5, 0.5])  # Messrauschen
+
+        # Physikalische Parameter
         self.r = self.physics["r"]
-        self.R = self.physics["R"]
+        self.R_phys = self.physics["R"]
         self.g = self.physics["g"]
         self.m = self.physics["m"]
         self.J = self.physics["J"]
         self.tau_m = self.physics["tau_m"]
         self.K_m = self.physics["K_m"]
 
+        # Systemmatrizen
         self.A = np.array([[0, 0, 1, 0],
                            [0, 0, 0, 1],
-                           [(self.m * self.g * self.R) / self.J, 0, 0,
-                            (self.m * self.r * self.R) / (self.tau_m * self.J)],
+                           [(self.m * self.g * self.R_phys) / self.J, 0, 0, (self.m * self.r * self.R_phys) / (self.tau_m * self.J)],
                            [0, 0, 0, -1 / self.tau_m]])
 
         self.B = np.array([[0],
                            [0],
-                           [(-self.K_m * self.m * self.r * self.R) / (self.tau_m * self.J)],
+                           [(-self.K_m * self.m * self.r * self.R_phys) / (self.tau_m * self.J)],
                            [self.K_m / self.tau_m]])
 
-        self.C = np.array([[1, 1, 1, 1]])
-        self.D = np.array([[0]])
+        self.C = np.eye(4)  # Volle Zustandsmessung
+        self.D = np.zeros((4,1))
 
         self.Ad = None
         self.Bd = None
         self.Cd = None
         self.Dd = None
 
-        self.Q = np.eye(self.A.shape[0])
-        self.R_k = np.eye(self.C.shape[0])
+        self.L = None  # Kalman-Gain
 
-        self.P = np.eye(self.A.shape[0])
+        self.x_hat = np.zeros((4, 1))  # Zustands-Schätzung
+        self.u = 0.0  # Steuerungseingang
 
-        self.x_hat = np.zeros((self.A.shape[0], 1))
-        self.x = np.array([0.0, 0.0, 0.0, 0.0])
+        self.out = [0, 0, 0, 0]
 
-        self.out = {
-                "p":0.0,
-                "x":0.0,
-                "pv": 0.0,
-                "v": 0.0
-                }
         self.data = {
-            "config": self.config,
-            "out": self.out,
-            "en": self.en,
+            "x_hat": self.x_hat.flatten().tolist(),
             "time": self.now,
             "frequency": self.frequency
         }
@@ -67,95 +65,69 @@ class KalmanObserver:
         self.logger.setLevel(logging_level)
 
         try:
-            self.calc_system()
-            self.logger.info("Erfolgreich initialisiert.")
+            self.calc_gains(self.config)
+            self.logger.info("Kalman-Filter erfolgreich initialisiert.")
         except Exception as e:
             self.logger.critical(str(e))
             traceback.format_exc()
 
-    def calc_system(self):
-        # 1. create system
+    def _loop(self, y_meas):
+        self.now = time.perf_counter()
+        self.dt = self.now - self.last_time
+        self.frequency = (1 / self.dt)
+        self.last_time = self.now
+
+        try:
+            # 1. Prediction
+            self.x_hat = self.Ad @ self.x_hat + self.Bd * self.u
+
+            # 2. Correction
+            y_hat = self.C @ self.x_hat
+            innovation = y_meas.reshape(-1, 1) - y_hat
+            self.x_hat = self.x_hat + self.L @ innovation
+
+            self.out = self.x_hat.flatten().tolist()
+            # print(self.out)
+
+            self.data = {
+                "out": {
+                "p": self.out[0],
+                "x": self.out[1],
+                "pv": self.out[2],
+                "v": self.out[3]
+            },
+                "time": self.now,
+                "frequency": self.frequency
+            }
+
+            self.logger.debug(self.data)
+        except Exception as e:
+            self.logger.error(str(e))
+            traceback.format_exc()
+
+    def loop(self, x1, x2, x3, x4, u, data):
+        y_meas = np.array([x1, x2, x3, x4])
+        self.u = u
+
+        self._loop(y_meas)
+
+        return self.data
+
+    def calc_gains(self, config):
+        self.config = config
+        self.Q = np.diag(self.config["Q"])  # Prozessrauschen (Modell)
+        self.R = np.diag(self.config["R"])  # Messrauschen (Sensoren)
+
+        # 1. System erstellen
         sys_cont = control.StateSpace(self.A, self.B, self.C, self.D)
 
-        # 2. discretize
-        Ts = 1/self.freq
+        # 2. Diskretisieren
+        Ts = 1 / self.freq
         sys_disc = control.c2d(sys_cont, Ts, method='zoh')
 
         self.Ad = sys_disc.A
         self.Bd = sys_disc.B
-        self.Cd = sys_disc.C
-        self.Dd = sys_disc.D
 
-    def predict(self, u):
-        """
-        Vorhersage-Schritt
-        u: Eingangssignal (Steuersignal), muss 2D np.array sein z.B. np.array([[u]])
-        """
-        try:
-            # x(k|k-1) = A * x(k-1|k-1) + B * u
-            self.x_hat = self.Ad @ self.x_hat + self.Bd @ u
-
-            # P(k|k-1) = A * P(k-1|k-1) * A.T + Q
-            self.P = self.Ad @ self.P @ self.Ad.T + self.Q
-
-        except Exception as e:
-            self.logger.error("Fehler im Predict-Schritt: " + str(e))
-            traceback.format_exc()
-
-    def update(self, y):
-        """
-        Update-Schritt mit Messung
-        y: Messvektor, muss 2D np.array sein z.B. np.array([[y1], [y2], [y3], [y4]])
-        """
-        try:
-            # Innovation: y - C * x
-            y_tilde = y - self.Cd @ self.x_hat
-
-            # Innovationskovarianz: S = C * P * C.T + R
-            S = self.Cd @ self.P @ self.Cd.T + self.R_k
-
-            # Kalman-Gain
-            K = self.P @ self.Cd.T @ np.linalg.inv(S)
-
-            # Zustandsschätzung aktualisieren: x(k|k) = x(k|k-1) + K * (y - C * x)
-            self.x_hat = self.x_hat + K @ y_tilde
-
-            # Fehlerkovarianz aktualisieren: P = (I - K * C) * P
-            I = np.eye(self.P.shape[0])
-            self.P = (I - K @ self.Cd) @ self.P
-
-        except Exception as e:
-            self.logger.error("Fehler im Update-Schritt: " + str(e))
-            traceback.format_exc()
-
-    def loop(self, u, y1, y2, y3, y4, data):
-        """
-        Kompletter Kalman-Filter-Schritt (Prediction + Update)
-        u: Eingangssignal (np.array([[u]]))
-        y: Messvektor (np.array([[y1], [y2], ...]))
-        Gibt den geschätzten Zustand x_hat zurück
-        """
-        self.config = data["config"]
-        Q = np.diag(self.config["Q"])
-        R = np.array([[self.config["R"]]])
-        if (not np.array_equal(self.Q, Q)) or (not np.array_equal(self.R_k, R)):
-            self.Q = Q
-            self.R_k = R
-
-        self.en = data["en"]
-
-        y = np.array([[y1], [y2], [y3], [y4]])
-        u_ = np.array([[u]])
-        self.predict(u_)
-        self.update(y)
-
-        self.out = {
-            "p": self.x_hat[0],
-            "x": self.x_hat[1],
-            "pv": self.x_hat[2],
-            "v": self.x_hat[3]
-        }
-
-        self.data["out"] = self.out
-
-        return self.data
+        # 3. Kalman-Gain berechnen
+        self.L, P, E = control.dlqe(self.Ad, np.eye(self.Ad.shape[0]), self.C, self.Q, self.R)
+        print("Kalman Gain L:", self.L)

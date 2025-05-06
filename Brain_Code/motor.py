@@ -43,6 +43,9 @@ class MOTOR:
             # torque control
             config_string = "TC0\n"
             self.mot.write(config_string.encode('utf-8'))
+            # velocity LP
+            config_string = "TVF0.025\n"
+            self.mot.write(config_string.encode('utf-8'))
 
             self.logger.info("Erfolgreich initialisiert.")
         except Exception as e:

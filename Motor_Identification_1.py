@@ -49,7 +49,7 @@ data_connector3 = DataConnector(plot_curve3, max_points=600, update_rate=100)
 
 start_time = time.perf_counter()
 
-def update(connector1, connector2, connector3, connector4, connector5, connector6, connector7, connector8):
+def update(connector1, connector2, connector3):
     while running:
         socket.send_string("blabla")
         data = json.loads(socket.recv_string())
@@ -60,7 +60,9 @@ def update(connector1, connector2, connector3, connector4, connector5, connector
         connector1.cb_append_data_point(value1, current_time)
         connector2.cb_append_data_point(value2, current_time)
         connector3.cb_append_data_point(value3, current_time)
-        csv_writer.writerow([current_time, value1, value2, value3])
+
+        if value1 > 1.0:
+            csv_writer.writerow([current_time, value1, value2, value3])
 
         sleep(0.001)
 

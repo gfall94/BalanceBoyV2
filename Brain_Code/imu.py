@@ -21,6 +21,7 @@ class IMU:
         self.roll = 0.0
         self.pitch = 0.0
         self.yaw = 0.0
+        self.yaw_offset = 0.0
         self.gyro_x = 0.0
         self.gyro_y = 0.0
         self.gyro_z = 0.0
@@ -79,10 +80,11 @@ class IMU:
                 # print(f"\n\nQuat: {time.perf_counter()-tmp}")
 
                 # tmp = time.perf_counter()
-                pitch, self.roll, self.yaw = self.quaternion_to_euler(quat_i, quat_j, quat_k, quat_real)
+                pitch, self.roll, yaw = self.quaternion_to_euler(quat_i, quat_j, quat_k, quat_real)
                 # print(f"Euler: {time.perf_counter()-tmp}")
 
                 self.pitch = pitch
+                self.yaw = yaw-self.yaw_offset
 
                 self.data = {
                     "roll": self.roll,
@@ -100,4 +102,7 @@ class IMU:
                 self.logger.error(str(e))
 
             return self.data
+
+    def reset(self):
+        self.yaw_offset = self.yaw_offset + self.yaw
 

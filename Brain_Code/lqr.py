@@ -76,7 +76,7 @@ class LQR:
             if self.en:
 
                 u = -self.Gains @ (self.x - self.sp)
-                self.out = float(max(min(u, self.max), self.min))
+                self.out = float(np.clip(u, self.min, self.max))
                 # self.out = 100.0
             else:
                 self.out = 0.0

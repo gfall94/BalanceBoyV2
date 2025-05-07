@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Live Sensor-Chart</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: Arial; background: #f0f0f0; text-align: center; padding-top: 20px; }
+        canvas { background: white; border: 1px solid #ccc; }
+        button { font-size: 16px; margin: 10px; padding: 10px 20px; }
+    </style>
+</head>
+<body>
+    <h1>Live Sensor-Chart</h1>
+    <canvas id="myChart" width="750px" height="300px"></canvas>
+    <button onclick="startStream()">Start</button>
+    <button onclick="stopStream()">Stop</button>
+    <p id="status">Verbunden</p>
+
+    <script>
+        const ctx = document.getElementById('myChart').getContext('2d');
+
+        const colors = [
+            'rgb(255, 99, 132)', 'rgb(54, 162, 235)', 'rgb(255, 206, 86)', 'rgb(75, 192, 192)',
+            'rgb(153, 102, 255)', 'rgb(255, 159, 64)', 'rgb(0, 200, 83)', 'rgb(220, 20, 60)'
+        ];
+
+        const chartnames = ['Pitch', 'Pitch_SP',
+                            'x', 'x_SP',
+                            'yaw', 'yaw_SP',
+                            'n.A.', 'n.A.'
+                            ];
+
+        const datasets = [];
+        for (let i = 0; i < 8; i++) {
+            datasets.push({
+                label: chartnames[i],
+                data: [],
+                borderColor: colors[i],
+                tension: 0.1
+            });
+        }
+
+        const data = {
+            labels: [],
+            datasets: datasets
+        };
+
+        const config = {
+            type: 'line',
+            data: data,
+            options: {
+                animation: false,
+                scales: {
+                    x: { display: false },
+                    y: { beginAtZero: false }  // Auto-Scaling aktiv
+                },
+                elements: {
+                    point: { radius: 0 }
+                }
+            }
+        };
+
+        const myChart = new Chart(ctx, config);
+
+        // WebSocket
+        let ws = null;
+        let streaming = true;
+
+        function connectWebSocket() {
+            ws = new WebSocket("ws://" + window.location.hostname + ":8000/ws");
+            ws.onmessage = function(event) {
+                if (!streaming) return;  // Stream pausiert
+
+                const sensorValues = JSON.parse(event.data);
+
+                data.labels.push('');
+                for (let i = 0; i < 8; i++) {
+                    data.datasets[i].data.push(sensorValues[i]);
+                }
+
+                // Max 1500 Punkte (30 Sek bei 50 Hz)
+                if (data.labels.length > 500) {
+                    data.labels.shift();
+                    for (let i = 0; i < 8; i++) {
+                        data.datasets[i].data.shift();
+                    }
+                }
+
+                myChart.update();
+            };
+
+            ws.onopen = function() {
+                document.getElementById("status").textContent = "Connected";
+            };
+
+            ws.onclose = function() {
+                document.getElementById("status").textContent = "No Connection";
+            };
+        }
+
+        function startStream() {
+            streaming = true;
+        }
+
+        function stopStream() {
+            streaming = false;
+        }
+
+        connectWebSocket();
+    </script>
+</body>
+</html>

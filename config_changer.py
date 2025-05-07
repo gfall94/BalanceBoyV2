@@ -10,16 +10,11 @@ socket.connect("tcp://192.168.1.101:%s" % port)
 # TODO
 # motoren von 0-7,5 auf 0-100 geändert
 pid = {
-    "pitch": {
+    "yaw": {
         "Kp": 25.0,
         "Ki": 100.0,
         "Kd": 2.0
     },
-    "velocity": {
-                "Kp": 0.0,
-                "Ki": 0.00,
-                "Kd": 0.0
-            },
     "lqr": {
             "Q": [100, 15, 50, 25],
             "R": 1.0
